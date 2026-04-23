@@ -17,26 +17,22 @@ trainer:
       init_args:
         logging_interval: "step"
 model:
-  class_path: models.seq2seq.ChartGenerator
-  init_args:
-    n_mels: 128
-    d_model: 256
-    nhead: 8
-    num_encoder_layers: 4
-    num_decoder_layers: 6
-    dim_feedforward: 1024
-    dropout: 0.1
-    lr: 1e-4
-    warmup_steps: 4000
+  n_mels: 128
+  d_model: 256
+  nhead: 8
+  num_encoder_layers: 4
+  num_decoder_layers: 6
+  dim_feedforward: 1024
+  dropout: 0.1
+  lr: 1e-4
+  warmup_steps: 4000
 data:
-  class_path: data.dataset.MaiGenDataModule
-  init_args:
-    data_dir: "/storage/all_charts_std_master_remaster"
-    csv_file: "data/all_songs.csv"
-    cache_dir: "/tmp/audio_cache/"
-    batch_size: 16
-    num_workers: 8
-    sr: 22050
-    n_fft: 512
-    n_mels: 128
-    max_audio_frame: 32768
+  data_dir: "/storage/all_charts_std_master_remaster"
+  csv_file: "data/all_songs.csv"
+  cache_dir: "/tmp/audio_cache/"
+  batch_size: 16
+  num_workers: 8
+  sr: 22050
+  n_fft: 512
+  n_mels: 128
+  max_audio_frame: 32768
