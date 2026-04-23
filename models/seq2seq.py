@@ -74,11 +74,9 @@ class ChartDecoder(nn.Module):
         if tgt_mask is None:
             tgt_mask = self.generate_square_subsequent_mask(tgt.size(1)).to(tgt.device)
             
-        kwargs = {}
+        kwargs = {'tgt_mask': tgt_mask}
         if tgt_is_causal:
             kwargs['tgt_is_causal'] = True
-        else:
-            kwargs['tgt_mask'] = tgt_mask
 
         output = self.transformer_decoder(
             tgt_emb, memory, 
