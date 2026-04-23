@@ -5,6 +5,7 @@ trainer:
   max_epochs: 100
   precision: 16-mixed
   check_val_every_n_epoch: 1
+  accumulate_grad_batches: 8
   callbacks:
     - class_path: pytorch_lightning.callbacks.ModelCheckpoint
       init_args:
@@ -30,8 +31,8 @@ data:
   data_dir: "/storage/all_charts_std_master_remaster"
   csv_file: "data/all_songs.csv"
   cache_dir: "/tmp/audio_cache/"
-  batch_size: 16
-  num_workers: 8
+  batch_size: 2
+  num_workers: 1
   sr: 22050
   n_fft: 512
   n_mels: 128

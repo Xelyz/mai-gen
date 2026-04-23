@@ -1,3 +1,5 @@
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 from pytorch_lightning.cli import LightningCLI
 from models.seq2seq import ChartGenerator
 from data.dataset import MaiGenDataModule
