@@ -21,7 +21,7 @@ def main():
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
     
-    data_args = config['data']['init_args']
+    data_args = config['data']
     sr = data_args.get('sr', 22050)
     n_fft = data_args.get('n_fft', 512)
     n_mels = data_args.get('n_mels', 128)

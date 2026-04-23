@@ -15,8 +15,11 @@ def load_audio_wave(sr, max_duration, audio_path, fallback_load_method=None):
     if fallback_load_method is None or len(fallback_load_method) == 0:
         raise ValueError(f"Cannot load: {audio_path}, {os.path.exists(audio_path)}")
     try:
+        import warnings
         audio = fallback_load_method[0](audio_path)
-        y, sr = librosa.load(audio, sr=sr, duration=max_duration)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            y, sr = librosa.load(audio, sr=sr, duration=max_duration)
         if len(y) == 0:
             raise ValueError("")
         return y, sr
