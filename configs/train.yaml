@@ -17,6 +17,11 @@ trainer:
     - class_path: pytorch_lightning.callbacks.LearningRateMonitor
       init_args:
         logging_interval: "step"
+    - class_path: gdrive_callback.GoogleDriveUploader
+      init_args:
+        drive_folder_id: "1u8KQUrWQujsQ9TxlR-y0ukgzNIUt7gZD"
+        credentials_file: "/notebooks/credentials.json"
+        delete_local_after_upload: true
 model:
   n_mels: 128
   d_model: 256

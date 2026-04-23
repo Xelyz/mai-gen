@@ -88,13 +88,15 @@ class ChartDecoder(nn.Module):
 class ChartGenerator(pl.LightningModule):
     def __init__(self, 
                  n_mels=128, d_model=256, nhead=8, num_encoder_layers=4, num_decoder_layers=6, 
-                 dim_feedforward=1024, dropout=0.1, lr=1e-4, warmup_steps=4000):
+                 dim_feedforward=1024, dropout=0.1, lr=1e-4, warmup_steps=4000,
+                 max_token_len=4096):
         super().__init__()
         self.save_hyperparameters()
         
         vocab = build_vocab()
         self.vocab_size = len(vocab)
         self.pad_idx = vocab['<pad>']
+        self.max_token_len = max_token_len
         
         self.lr = lr
         self.warmup_steps = warmup_steps
@@ -118,7 +120,7 @@ class ChartGenerator(pl.LightningModule):
         
     def training_step(self, batch, batch_idx):
         mel = batch['audio']
-        tgt = batch['tokens']
+        tgt = batch['tokens'][:, :self.max_token_len]
         
         logits = self(mel, tgt) # (B, L-1, V)
         
@@ -131,7 +133,7 @@ class ChartGenerator(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         mel = batch['audio']
-        tgt = batch['tokens']
+        tgt = batch['tokens'][:, :self.max_token_len]
         
         logits = self(mel, tgt)
         tgt_expected = tgt[:, 1:]
@@ -159,7 +161,9 @@ class ChartGenerator(pl.LightningModule):
         }
         
     @torch.no_grad()
-    def generate(self, mel, bos_idx, eos_idx, max_len=10000):
+    def generate(self, mel, bos_idx, eos_idx, max_len=None):
+        if max_len is None:
+            max_len = self.max_token_len
         self.eval()
         device = mel.device
         batch_size = mel.shape[0]
