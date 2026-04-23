@@ -1,0 +1,42 @@
+seed_everything: 42
+trainer:
+  accelerator: auto
+  devices: auto
+  max_epochs: 100
+  precision: 16-mixed
+  check_val_every_n_epoch: 1
+  callbacks:
+    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "models/checkpoints"
+        filename: "mai_gen_{epoch:03d}"
+        save_top_k: 3
+        monitor: "val/loss"
+        mode: "min"
+    - class_path: pytorch_lightning.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: "step"
+model:
+  class_path: models.seq2seq.ChartGenerator
+  init_args:
+    n_mels: 128
+    d_model: 256
+    nhead: 8
+    num_encoder_layers: 4
+    num_decoder_layers: 6
+    dim_feedforward: 1024
+    dropout: 0.1
+    lr: 1e-4
+    warmup_steps: 4000
+data:
+  class_path: data.dataset.MaiGenDataModule
+  init_args:
+    data_dir: "/storage/all_charts_std_master_remaster"
+    csv_file: "data/all_songs.csv"
+    cache_dir: "/tmp/audio_cache/"
+    batch_size: 16
+    num_workers: 8
+    sr: 22050
+    n_fft: 512
+    n_mels: 128
+    max_audio_frame: 32768
