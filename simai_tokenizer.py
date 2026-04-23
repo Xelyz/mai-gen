@@ -115,21 +115,18 @@ def _parse_slide_info(note_content: str, start_position: int) -> Tuple[str, int]
 # ---------------------------------------------------------------------------
 #  Token types
 # ---------------------------------------------------------------------------
-TOKEN_TAP = '<tap>'
-TOKEN_HOLD = '<hold>'
-TOKEN_SLIDE = '<slide>'
-TOKEN_BREAK = '<break>'
-TOKEN_SLIDE_HEAD = '<slide_head>'
-TOKEN_POSITION = '<position {}>'  # .format(1-8)
-TOKEN_TIME = '<time {}>'          # .format(int, unit=10ms)
-TOKEN_END_AT = '<end_at>'
-TOKEN_HEAD = '<head {}>'          # .format(1-8)
-TOKEN_SHAPE = '<shape {}>'        # .format(shape_str)
-TOKEN_TAIL = '<tail {}>'          # .format(1-8)
-TOKEN_END_TAP = '<end_tap>'
-TOKEN_END_HOLD = '<end_hold>'
-TOKEN_END_SLIDE = '<end_slide>'
+def format_tap(pos, is_break=False, is_slide_head=False):
+    prefix = 'slide_head' if is_slide_head else 'tap'
+    suffix = '_break' if is_break else ''
+    return f'<{prefix}{suffix}_p{pos}>'
 
+def format_hold(pos):
+    return f'<hold_p{pos}>'
+
+def format_slide(head, tail, shape):
+    return f'<slide_h{head}_t{tail}_{shape}>'
+
+TOKEN_TIME = '<time {}>'
 
 def _time_to_token_val(time_seconds: float) -> int:
     """Convert a time in seconds to a whole-number 10 ms unit (rounded)."""
@@ -217,65 +214,41 @@ def tokenize_chart(maidata_path: str, difficulty) -> Optional[List[str]]:
             pos = note.startPosition  # 1-8
 
             if nt == m2o.SimaiNoteType.Tap:
-                # --- TAP ---
                 t_val = _time_to_token_val(timestamp_s)
-                toks: List[str] = [
-                    TOKEN_TAP,
-                    TOKEN_POSITION.format(pos),
-                    TOKEN_TIME.format(t_val),
+                toks = [
+                    format_tap(pos, is_break=note.isBreak, is_slide_head=False),
+                    TOKEN_TIME.format(t_val)
                 ]
-                if note.isBreak:
-                    toks.append(TOKEN_BREAK)
-                toks.append(TOKEN_END_TAP)
                 events.append(_TokenEvent(time_val=t_val, sort_priority=0, tokens=toks))
 
             elif nt == m2o.SimaiNoteType.Hold:
-                # --- HOLD ---
                 t_start = _time_to_token_val(timestamp_s)
                 t_end = _time_to_token_val(timestamp_s + note.holdTime)
                 toks = [
-                    TOKEN_HOLD,
-                    TOKEN_POSITION.format(pos),
+                    format_hold(pos),
                     TOKEN_TIME.format(t_start),
-                    TOKEN_END_AT,
-                    TOKEN_TIME.format(t_end),
-                    TOKEN_END_HOLD,
+                    TOKEN_TIME.format(t_end)
                 ]
                 events.append(_TokenEvent(time_val=t_start, sort_priority=0, tokens=toks))
 
             elif nt == m2o.SimaiNoteType.Slide:
-                # Decompose into TAP (slide head) + SLIDE
-
-                # 1) Tap with slide_head at the note timestamp
                 if not note.isSlideNoHead:
                     t_tap = _time_to_token_val(timestamp_s)
-                    tap_toks: List[str] = [
-                        TOKEN_TAP,
-                        TOKEN_POSITION.format(pos),
-                        TOKEN_TIME.format(t_tap),
+                    tap_toks = [
+                        format_tap(pos, is_break=note.isBreak, is_slide_head=True),
+                        TOKEN_TIME.format(t_tap)
                     ]
-                    if note.isBreak:
-                        tap_toks.append(TOKEN_BREAK)
-                    tap_toks.append(TOKEN_SLIDE_HEAD)
-                    tap_toks.append(TOKEN_END_TAP)
                     events.append(_TokenEvent(time_val=t_tap, sort_priority=0, tokens=tap_toks))
 
-                # 2) Slide at slideStartTime
                 shape_str, target_pos = _parse_slide_info(note.noteContent, pos)
-                slide_start_s = note.slideStartTime  # absolute seconds
+                slide_start_s = note.slideStartTime
                 t_slide = _time_to_token_val(slide_start_s)
-
                 t_slide_end = _time_to_token_val(slide_start_s + note.slideTime)
 
-                slide_toks: List[str] = [
-                    TOKEN_SLIDE,
+                slide_toks = [
+                    format_slide(pos, target_pos, shape_str),
                     TOKEN_TIME.format(t_slide),
-                    TOKEN_HEAD.format(pos),
-                    TOKEN_SHAPE.format(shape_str),
-                    TOKEN_TAIL.format(target_pos),
-                    TOKEN_END_AT,
-                    TOKEN_TIME.format(t_slide_end),
-                    TOKEN_END_SLIDE,
+                    TOKEN_TIME.format(t_slide_end)
                 ]
                 events.append(_TokenEvent(time_val=t_slide, sort_priority=1, tokens=slide_toks))
 
@@ -305,25 +278,27 @@ def build_vocab() -> Dict[str, int]:
     Returns a dict mapping token string -> integer id.
     """
     vocab: List[str] = [
-        '<pad>', '<bos>', '<eos>', '<unk>',
-        TOKEN_TAP, TOKEN_HOLD, TOKEN_SLIDE,
-        TOKEN_BREAK, TOKEN_SLIDE_HEAD, TOKEN_END_AT,
-        TOKEN_END_TAP, TOKEN_END_HOLD, TOKEN_END_SLIDE
+        '<pad>', '<bos>', '<eos>', '<unk>'
     ]
-    # positions 1-8
+    # Taps
     for p in range(1, 9):
-        vocab.append(TOKEN_POSITION.format(p))
-    # head / tail positions 1-8
+        vocab.append(f'<tap_p{p}>')
+        vocab.append(f'<tap_break_p{p}>')
+        vocab.append(f'<slide_head_p{p}>')
+        vocab.append(f'<slide_head_break_p{p}>')
+        
+    # Holds
     for p in range(1, 9):
-        vocab.append(TOKEN_HEAD.format(p))
-    for p in range(1, 9):
-        vocab.append(TOKEN_TAIL.format(p))
-    # shapes
-    for s in sorted(SHAPE_VOCAB):
-        vocab.append(TOKEN_SHAPE.format(s))
-    vocab.append(TOKEN_SHAPE.format('?'))  # unknown shape
-    
-    # time values: 0 .. 18000 (up to 3 minutes at 10ms resolution)
+        vocab.append(f'<hold_p{p}>')
+        
+    # Slides
+    shapes = sorted(list(SHAPE_VOCAB)) + ['?']
+    for h in range(1, 9):
+        for t in range(1, 9):
+            for s in shapes:
+                vocab.append(f'<slide_h{h}_t{t}_{s}>')
+                
+    # Times
     for t in range(18001):
         vocab.append(TOKEN_TIME.format(t))
 
@@ -333,192 +308,76 @@ def build_vocab() -> Dict[str, int]:
 # ---------------------------------------------------------------------------
 #  Detokenizer: tokens -> chart
 # ---------------------------------------------------------------------------
-_RE_POSITION = re.compile(r'^<position (\d+)>$')
 _RE_TIME = re.compile(r'^<time (-?\d+)>$')
-_RE_HEAD = re.compile(r'^<head (\d+)>$')
-_RE_SHAPE = re.compile(r'^<shape (.+)>$')
-_RE_TAIL = re.compile(r'^<tail (\d+)>$')
-
-_NOTE_STARTS = {TOKEN_TAP, TOKEN_HOLD, TOKEN_SLIDE}
-
+_RE_TAP = re.compile(r'^<(tap|slide_head)(_break)?_p(\d+)>$')
+_RE_HOLD = re.compile(r'^<hold_p(\d+)>$')
+_RE_SLIDE = re.compile(r'^<slide_h(\d+)_t(\d+)_(.+)>$')
 
 def _match_int(token: str, pattern) -> Optional[int]:
     m = pattern.match(token)
     return int(m.group(1)) if m else None
 
-
-def _match_str(token: str, pattern) -> Optional[str]:
-    m = pattern.match(token)
-    return m.group(1) if m else None
-
-
-def _peek(tokens: List[str], i: int) -> Optional[str]:
-    return tokens[i] if i < len(tokens) else None
-
-
-def _parse_tap(tokens: List[str], start: int) -> Tuple[Optional[dict], int]:
-    """Parse: <tap> <position> <time> [<break>] [<slide_head>] <end_tap>"""
-    i = start + 1  # skip <tap>
-
-    pos = _match_int(_peek(tokens, i) or '', _RE_POSITION)
-    if pos is None:
-        return None, start + 1
-    i += 1
-
-    t = _match_int(_peek(tokens, i) or '', _RE_TIME)
-    if t is None:
-        return None, start + 1
-    i += 1
-
-    is_break = False
-    is_slide_head = False
-    while i < len(tokens):
-        tok = tokens[i]
-        if tok == TOKEN_BREAK:
-            is_break = True
-            i += 1
-        elif tok == TOKEN_SLIDE_HEAD:
-            is_slide_head = True
-            i += 1
-        elif tok == TOKEN_END_TAP:
-            i += 1
-            break
-        else:
-            # unexpected token — emit what we have, let caller re-process
-            break
-
-    note = {
-        'type': 'tap',
-        'position': pos,
-        'time_10ms': t,
-        'is_break': is_break,
-        'is_slide_head': is_slide_head,
-    }
-    return note, i
-
-
-def _parse_hold(tokens: List[str], start: int) -> Tuple[Optional[dict], int]:
-    """Parse: <hold> <position> <time> <end_at> <time> <end_hold>"""
-    i = start + 1
-
-    pos = _match_int(_peek(tokens, i) or '', _RE_POSITION)
-    if pos is None:
-        return None, start + 1
-    i += 1
-
-    t = _match_int(_peek(tokens, i) or '', _RE_TIME)
-    if t is None:
-        return None, start + 1
-    i += 1
-
-    if _peek(tokens, i) != TOKEN_END_AT:
-        return None, start + 1
-    i += 1
-
-    t_end = _match_int(_peek(tokens, i) or '', _RE_TIME)
-    if t_end is None:
-        return None, start + 1
-    i += 1
-
-    if _peek(tokens, i) == TOKEN_END_HOLD:
-        i += 1
-
-    note = {
-        'type': 'hold',
-        'position': pos,
-        'time_10ms': t,
-        'end_time_10ms': t_end,
-    }
-    return note, i
-
-
-def _parse_slide(tokens: List[str], start: int) -> Tuple[Optional[dict], int]:
-    """Parse: <slide> <time> <head> <shape> <tail> <end_at> <time> <end_slide>"""
-    i = start + 1
-
-    t = _match_int(_peek(tokens, i) or '', _RE_TIME)
-    if t is None:
-        return None, start + 1
-    i += 1
-
-    head = _match_int(_peek(tokens, i) or '', _RE_HEAD)
-    if head is None:
-        return None, start + 1
-    i += 1
-
-    shape = _match_str(_peek(tokens, i) or '', _RE_SHAPE)
-    if shape is None:
-        return None, start + 1
-    i += 1
-
-    tail = _match_int(_peek(tokens, i) or '', _RE_TAIL)
-    if tail is None:
-        return None, start + 1
-    i += 1
-
-    if _peek(tokens, i) != TOKEN_END_AT:
-        return None, start + 1
-    i += 1
-
-    t_end = _match_int(_peek(tokens, i) or '', _RE_TIME)
-    if t_end is None:
-        return None, start + 1
-    i += 1
-
-    if _peek(tokens, i) == TOKEN_END_SLIDE:
-        i += 1
-
-    note = {
-        'type': 'slide',
-        'head_position': head,
-        'time_10ms': t,
-        'shape': shape,
-        'tail_position': tail,
-        'end_time_10ms': t_end,
-    }
-    return note, i
-
-
 def detokenize(tokens: List[str]) -> List[dict]:
-    """
-    Parse a flat token list back into a list of note dicts.
-
-    Each dict has a 'type' key ('tap', 'hold', or 'slide') plus
-    type-specific fields.  Unexpected tokens are silently skipped.
-
-    Returns:
-        List of note dicts sorted by time.
-    """
     notes: List[dict] = []
     i = 0
     skipped = 0
     while i < len(tokens):
         tok = tokens[i]
-        if tok == TOKEN_TAP:
-            note, i = _parse_tap(tokens, i)
-            if note:
-                notes.append(note)
-            else:
-                skipped += 1
-        elif tok == TOKEN_HOLD:
-            note, i = _parse_hold(tokens, i)
-            if note:
-                notes.append(note)
-            else:
-                skipped += 1
-        elif tok == TOKEN_SLIDE:
-            note, i = _parse_slide(tokens, i)
-            if note:
-                notes.append(note)
-            else:
-                skipped += 1
-        else:
-            i += 1
-            skipped += 1
+        
+        m_tap = _RE_TAP.match(tok)
+        if m_tap:
+            if i + 1 < len(tokens):
+                t_tok = tokens[i+1]
+                t_val = _match_int(t_tok, _RE_TIME)
+                if t_val is not None:
+                    notes.append({
+                        'type': 'tap',
+                        'position': int(m_tap.group(3)),
+                        'time_10ms': t_val,
+                        'is_break': bool(m_tap.group(2)),
+                        'is_slide_head': (m_tap.group(1) == 'slide_head')
+                    })
+                    i += 2
+                    continue
+                    
+        m_hold = _RE_HOLD.match(tok)
+        if m_hold:
+            if i + 2 < len(tokens):
+                t1 = _match_int(tokens[i+1], _RE_TIME)
+                t2 = _match_int(tokens[i+2], _RE_TIME)
+                if t1 is not None and t2 is not None:
+                    notes.append({
+                        'type': 'hold',
+                        'position': int(m_hold.group(1)),
+                        'time_10ms': t1,
+                        'end_time_10ms': t2
+                    })
+                    i += 3
+                    continue
+                    
+        m_slide = _RE_SLIDE.match(tok)
+        if m_slide:
+            if i + 2 < len(tokens):
+                t1 = _match_int(tokens[i+1], _RE_TIME)
+                t2 = _match_int(tokens[i+2], _RE_TIME)
+                if t1 is not None and t2 is not None:
+                    notes.append({
+                        'type': 'slide',
+                        'head_position': int(m_slide.group(1)),
+                        'tail_position': int(m_slide.group(2)),
+                        'shape': m_slide.group(3),
+                        'time_10ms': t1,
+                        'end_time_10ms': t2
+                    })
+                    i += 3
+                    continue
+                    
+        # If we reach here, it's malformed or skip
+        i += 1
+        skipped += 1
 
     if skipped:
         print(f"Warning: skipped {skipped} unexpected/malformed tokens", file=sys.stderr)
-
     notes.sort(key=lambda n: n['time_10ms'])
     return notes
 

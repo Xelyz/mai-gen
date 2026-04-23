@@ -102,8 +102,7 @@ class SimaiTimingPoint:
                 # assuming malformed or handled by other logic. Added check.
 
             except (ValueError, IndexError, ZeroDivisionError) as e:
-                print(f"Warning: Could not parse beat time '{inner_string}': {e}", file=sys.stderr)
-                # Continue calculation if possible, otherwise duration might be inaccurate
+                raise ValueError(f"Could not parse beat time '{inner_string}': {e}")
 
         # If no brackets were found, check legacy format (hold without brackets)
         # The C# code implies holdTime=0 if 'h' is last and no brackets
@@ -145,8 +144,7 @@ class SimaiTimingPoint:
             # else: format [beat:count] - use currentBpm for default 1 beat wait
 
         except (ValueError, IndexError) as e:
-             print(f"Warning: Could not parse star wait BPM/time '{inner_string}': {e}", file=sys.stderr)
-             bpm = self.currentBpm # Revert to current BPM on error
+             raise ValueError(f"Could not parse star wait BPM/time '{inner_string}': {e}")
 
         # Default wait time is 1 beat (using potentially overridden bpm)
         if bpm > 0:
@@ -169,17 +167,14 @@ class SimaiTimingPoint:
                 else:
                     simaiNote.startPosition = 8 # Special case for Center
                 simaiNote.noteType = SimaiNoteType.Touch
-            except (IndexError, ValueError):
-                 print(f"Warning: Could not parse touch note position: {original_note_text}", file=sys.stderr)
-                 simaiNote.startPosition = 1 # Default fallback
-                 simaiNote.noteType = SimaiNoteType.Touch # Assume touch despite error
+            except (IndexError, ValueError) as e:
+                 raise ValueError(f"Could not parse touch note position: {original_note_text}: {e}")
         else:
             try:
                 simaiNote.startPosition = int(original_note_text[0])
                 simaiNote.noteType = SimaiNoteType.Tap # Default, might change
-            except (IndexError, ValueError):
-                 print(f"Warning: Could not parse tap note position: {original_note_text}", file=sys.stderr)
-                 simaiNote.startPosition = 1 # Default fallback
+            except (IndexError, ValueError) as e:
+                 raise ValueError(f"Could not parse tap note position: {original_note_text}: {e}")
 
         # Modifiers
         if 'f' in original_note_text:
@@ -327,9 +322,7 @@ class SimaiTimingPoint:
             self.noteList = simaiNotes # Cache the result
             return simaiNotes
         except Exception as e:
-            print(f"Error parsing notes content '{self.notesContent}' at time {self.time}: {e}", file=sys.stderr)
-            self.noteList = [] # Cache empty list on error
-            return self.noteList
+            raise ValueError(f"Error parsing notes content '{self.notesContent}' at time {self.time}: {e}")
 
 # --- Module-level state (equivalent to static class members) ---
 title: Optional[str] = ""
@@ -399,9 +392,8 @@ def read_data(filename: str) -> bool:
             elif line.startswith("&first="):
                 try:
                     first = float(_get_value(line))
-                except ValueError:
-                    print(f"Warning: Invalid float value for '&first=' at line {line_num}: {line}", file=sys.stderr)
-                    first = 0.0 # Default value
+                except ValueError as e:
+                    raise ValueError(f"Invalid float value for '&first=' at line {line_num}: {line}")
             elif line.startswith("&lv_") or line.startswith("&inote_"):
                 # This section needs careful index handling
                 # Find which level/note this line corresponds to
@@ -543,14 +535,11 @@ def serialize(text: str, position: int = 0) -> float:
                      initial_bpm_found = True
                      break # Found the first BPM
                  except ValueError as e:
-                      print(f"Warning: Invalid initial BPM '{bpm_s}': {e}. Chart processing may fail.", file=sys.stderr)
-                      # Continue searching in case there's another BPM marker later
-                      # If no valid BPM is found before the first note, time calculation will be wrong.
+                      raise ValueError(f"Invalid initial BPM '{bpm_s}': {e}.")
              temp_i +=1
 
         if not initial_bpm_found:
-             print("Warning: No initial BPM '(value)' found before first note/comma. Timing will be incorrect.", file=sys.stderr)
-             bpm = 60.0 # Arbitrary fallback BPM to avoid division by zero, but timing *will* be wrong
+             raise ValueError("No initial BPM '(value)' found before first note/comma.")
 
         # --- Second Pass: Process notes and timing ---
         i = 0
@@ -607,12 +596,10 @@ def serialize(text: str, position: int = 0) -> float:
                         new_bpm = float(bpm_s)
                         if new_bpm <= 0 : raise ValueError("BPM must be positive")
                         bpm = new_bpm
-                    except ValueError:
-                         print(f"Warning: Invalid BPM value '({bpm_s})' at line ~{y_count+1}. Using previous BPM {bpm}.", file=sys.stderr)
-                    # i is already at ')' here
+                    except ValueError as e:
+                         raise ValueError(f"Invalid BPM value '({bpm_s})' at line ~{y_count+1}: {e}")
                 else:
-                     print(f"Warning: Unmatched '(' for BPM at line ~{y_count+1}. BPM not changed.", file=sys.stderr)
-                     i = start_bracket -1 # Backtrack to re-process content if no ')' found
+                     raise ValueError(f"Unmatched '(' for BPM at line ~{y_count+1}.")
 
             elif char == '{': # Beat Signature Change
                 have_note = False
@@ -630,11 +617,10 @@ def serialize(text: str, position: int = 0) -> float:
                         new_beats = int(beats_s)
                         if new_beats <= 0 : raise ValueError("Beats must be positive")
                         beats = new_beats
-                     except ValueError:
-                        print(f"Warning: Invalid beats value '{{{beats_s}}}' at line ~{y_count+1}. Using previous beats {beats}.", file=sys.stderr)
+                     except ValueError as e:
+                        raise ValueError(f"Invalid beats value '{{{beats_s}}}' at line ~{y_count+1}: {e}")
                 else:
-                    print(f"Warning: Unmatched '{{' for beats at line ~{y_count+1}. Beats not changed.", file=sys.stderr)
-                    i = start_bracket -1 # Backtrack
+                    raise ValueError(f"Unmatched '{{' for beats at line ~{y_count+1}.")
 
             elif char == 'H': # Hi-Speed Change (HS*)
                  # Check for HS* syntax: H followed by S then *
@@ -652,11 +638,10 @@ def serialize(text: str, position: int = 0) -> float:
                     if i < len(text) and text[i] == '>':
                          try:
                               cur_h_speed = float(hs_s)
-                         except ValueError:
-                              print(f"Warning: Invalid HS value 'HS*{hs_s}>' at line ~{y_count+1}. Using previous HS {cur_h_speed}.", file=sys.stderr)
+                         except ValueError as e:
+                              raise ValueError(f"Invalid HS value 'HS*{hs_s}>' at line ~{y_count+1}: {e}")
                     else:
-                         print(f"Warning: Unmatched 'HS*...>' for Hi-Speed at line ~{y_count+1}. HS not changed.", file=sys.stderr)
-                         i = start_marker -1 # Backtrack
+                         raise ValueError(f"Unmatched 'HS*...>' for Hi-Speed at line ~{y_count+1}.")
                  # If not HS*, treat 'H' potentially as part of a note later
 
             # --- Accumulate Note Data ---
@@ -696,10 +681,7 @@ def serialize(text: str, position: int = 0) -> float:
                 if bpm > 0 and beats > 0:
                     time += (60.0 / bpm) * (4.0 / beats)
                 else:
-                    # Cannot advance time without valid BPM/beats, print warning once?
-                    if bpm <=0 : print(f"Warning: Cannot advance time at line ~{y_count+1}, BPM is {bpm}", file=sys.stderr)
-                    if beats <=0 : print(f"Warning: Cannot advance time at line ~{y_count+1}, Beats is {beats}", file=sys.stderr)
-                    # Time will remain stuck here
+                    raise ValueError(f"Cannot advance time at line ~{y_count+1}, BPM is {bpm}, Beats is {beats}")
 
             # Move to the next character
             i += 1
@@ -716,11 +698,7 @@ def serialize(text: str, position: int = 0) -> float:
         return requested_time
 
     except Exception as e:
-        print(f"Error during serialization at char index ~{i}, line ~{y_count+1}: {e}", file=sys.stderr)
-        # Clear lists on error to indicate failure
-        notelist = []
-        timinglist = []
-        return 0.0 # Return 0 time on error
+        raise ValueError(f"Error during serialization at char index ~{i}, line ~{y_count+1}: {e}")
 
 def clear_note_list_played_state():
     """Resets the 'havePlayed' flag for all notes in the notelist."""

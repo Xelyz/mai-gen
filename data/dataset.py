@@ -4,6 +4,7 @@ import os
 import csv
 import torch
 import numpy as np
+import random
 from torch.utils.data import Dataset
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
@@ -18,11 +19,21 @@ def load_audio_wave(sr, max_duration, audio_path, fallback_load_method=None):
         raise ValueError(f"Cannot load: {audio_path}, {os.path.exists(audio_path)}")
     try:
         audio = fallback_load_method[0](audio_path)
-        y, sr = librosa.load(audio, sr=sr, duration=max_duration)
+        y, sr = librosa.load(audio, sr=sr)
         if len(y) == 0:
-            raise ValueError("")
+            raise ValueError("Empty audio")
+        if len(y) / sr > 180.0:
+            raise ValueError(f"Audio exceeds 3 minutes: {len(y)/sr:.2f}s")
+        
+        # Truncate to max_duration
+        max_samples = int(max_duration * sr)
+        if len(y) > max_samples:
+            y = y[:max_samples]
+            
         return y, sr
-    except:
+    except Exception as e:
+        if "exceeds 3 minutes" in str(e):
+            raise e
         return load_audio_wave(sr, max_duration, audio_path, fallback_load_method[1:])
 
 def load_audio_without_cache(audio_path, n_mels, audio_hop_length, n_fft, sr, max_duration):
@@ -77,15 +88,63 @@ class MaiGenDataset(Dataset):
         self.pad_idx = self.vocab['<pad>']
         self.unk_idx = self.vocab['<unk>']
 
+        self.error_files = []
+        
+        # 创建logs目录用于存储错误日志
+        self.logs_dir = os.path.join(os.getcwd(), "logs")
+        os.makedirs(self.logs_dir, exist_ok=True)
+        
+        # 错误日志文件路径
+        self.error_log_path = os.path.join(self.logs_dir, "dataset_errors.txt")
+        
+        # 如果错误日志文件存在，读取已有的错误记录
+        if os.path.isfile(self.error_log_path):
+            self.error_files = []
+            with open(self.error_log_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and ':' in line:
+                        error_path_part = line.split(':', 1)[0].strip()
+                        self.error_files.append(error_path_part)
+            print(f"已加载 {len(self.error_files)} 个错误文件记录")
+
     def __len__(self):
         return len(self.data)
 
-    def __getitem__(self, idx):
+    def _log_error(self, path: str, error: Exception):
+        """记录错误到日志文件。"""
+        if path not in self.error_files:
+            with open(self.error_log_path, "a+", encoding='utf-8') as f:
+                f.write(f"{path}: {error}\n")
+            self.error_files.append(path)
+    
+    def _retry_with_random_index(self, retry_depth: int):
+        """使用随机索引重试获取数据。"""
+        new_idx = random.randint(0, len(self.data) - 1)
+        return self.__getitem__(new_idx, retry_depth + 1)
+    
+    def _handle_load_error(self, path: str, error: Exception, retry_depth: int):
+        """处理数据加载错误。"""
+        if retry_depth < 3:
+            return self._retry_with_random_index(retry_depth + 1)
+        else:
+            print(f"数据加载失败，已重试{retry_depth}次: {path}, 错误: {error}")
+            return None
+
+    def __getitem__(self, idx, retry_depth=0):
+        # 防止无限递归
+        if retry_depth > 10:
+            raise RuntimeError(f"Maximum retry depth exceeded for index {idx}")
+
         item = self.data[idx]
         path = os.path.join(self.data_dir, item['path'])
         chart_path = os.path.join(path, "maidata.txt")
         audio_path = os.path.join(path, "track.mp3")
         diff = item['diff']
+
+        # 检查是否在错误文件列表中，如果是则跳过
+        if path in self.error_files:
+            return self._retry_with_random_index(retry_depth)
 
         try:
             # Load audio
@@ -112,6 +171,10 @@ class MaiGenDataset(Dataset):
 
             token_ids = [self.bos_idx]
             for tok in str_tokens:
+                if tok.startswith('<time '):
+                    time_val = int(tok[6:-1])
+                    if time_val > 18000:
+                        raise ValueError(f"Chart exceeds 3 minutes: {time_val*0.01:.2f}s")
                 token_ids.append(self.vocab.get(tok, self.unk_idx))
             token_ids.append(self.eos_idx)
 
@@ -120,9 +183,8 @@ class MaiGenDataset(Dataset):
                 "tokens": torch.tensor(token_ids, dtype=torch.long)
             }
         except Exception as e:
-            print(f"Error loading {path}: {e}")
-            # Return empty/dummy item, collate_fn will filter it
-            return None
+            self._log_error(path, e)
+            return self._handle_load_error(path, e, retry_depth)
 
 def mai_gen_collate_fn(batch):
     batch = [b for b in batch if b is not None]
