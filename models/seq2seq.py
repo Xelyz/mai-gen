@@ -12,17 +12,17 @@ class PositionalEncoding(nn.Module):
 
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+            x: Tensor, shape [batch_size, seq_len, embedding_dim]
         """
-        x = x + self.pe[:x.size(0)]
+        x = x + self.pe[:, :x.size(1), :]
         return self.dropout(x)
 
 class AudioEncoder(nn.Module):
@@ -33,17 +33,17 @@ class AudioEncoder(nn.Module):
         self.conv2 = nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, stride=2)
         
         self.pos_encoder = PositionalEncoding(d_model, dropout)
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=False)
+        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
         
     def forward(self, x):
         """
         x: (batch, n_mels, time)
-        returns: (time_downsampled, batch, d_model)
+        returns: (batch, time_downsampled, d_model)
         """
         x = F.gelu(self.conv1(x))
         x = F.gelu(self.conv2(x)) # (B, C, T')
-        x = x.permute(2, 0, 1) # (T', B, C)
+        x = x.transpose(1, 2) # (B, T', C)
         x = self.pos_encoder(x)
         output = self.transformer_encoder(x)
         return output
@@ -53,7 +53,7 @@ class ChartDecoder(nn.Module):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoder = PositionalEncoding(d_model, dropout)
-        decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=False)
+        decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True)
         self.transformer_decoder = nn.TransformerDecoder(decoder_layers, num_layers)
         self.fc_out = nn.Linear(d_model, vocab_size)
         self.d_model = d_model
@@ -63,21 +63,27 @@ class ChartDecoder(nn.Module):
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
         return mask
 
-    def forward(self, tgt, memory, tgt_mask=None, tgt_key_padding_mask=None):
+    def forward(self, tgt, memory, tgt_mask=None, tgt_key_padding_mask=None, tgt_is_causal=False):
         """
-        tgt: (tgt_seq_len, batch)
-        memory: (memory_seq_len, batch, d_model)
+        tgt: (batch, tgt_seq_len)
+        memory: (batch, memory_seq_len, d_model)
         """
         tgt_emb = self.embedding(tgt) * math.sqrt(self.d_model)
         tgt_emb = self.pos_encoder(tgt_emb)
         
         if tgt_mask is None:
-            tgt_mask = self.generate_square_subsequent_mask(len(tgt)).to(tgt.device)
+            tgt_mask = self.generate_square_subsequent_mask(tgt.size(1)).to(tgt.device)
             
+        kwargs = {}
+        if tgt_is_causal:
+            kwargs['tgt_is_causal'] = True
+        else:
+            kwargs['tgt_mask'] = tgt_mask
+
         output = self.transformer_decoder(
             tgt_emb, memory, 
-            tgt_mask=tgt_mask, 
-            tgt_key_padding_mask=tgt_key_padding_mask
+            tgt_key_padding_mask=tgt_key_padding_mask,
+            **kwargs
         )
         return self.fc_out(output)
 
@@ -102,25 +108,24 @@ class ChartGenerator(pl.LightningModule):
     def forward(self, mel, tgt):
         # mel: (B, 128, T)
         # tgt: (B, L)
-        memory = self.encoder(mel) # (T', B, d_model)
-        tgt_transposed = tgt.transpose(0, 1) # (L, B)
+        memory = self.encoder(mel) # (B, T', d_model)
         
         # Shift target for input
-        tgt_input = tgt_transposed[:-1, :]
+        tgt_input = tgt[:, :-1]
         
-        tgt_key_padding_mask = (tgt_input == self.pad_idx).transpose(0, 1) # (B, L-1)
+        tgt_key_padding_mask = (tgt_input == self.pad_idx) # (B, L-1)
         
-        logits = self.decoder(tgt_input, memory, tgt_key_padding_mask=tgt_key_padding_mask) # (L-1, B, vocab_size)
+        logits = self.decoder(tgt_input, memory, tgt_key_padding_mask=tgt_key_padding_mask, tgt_is_causal=True) # (B, L-1, vocab_size)
         return logits
         
     def training_step(self, batch, batch_idx):
         mel = batch['audio']
         tgt = batch['tokens']
         
-        logits = self(mel, tgt) # (L-1, B, V)
+        logits = self(mel, tgt) # (B, L-1, V)
         
-        # Expected tgt: tgt_transposed[1:, :]
-        tgt_expected = tgt.transpose(0, 1)[1:, :]
+        # Expected tgt
+        tgt_expected = tgt[:, 1:]
         
         loss = self.criterion(logits.reshape(-1, self.vocab_size), tgt_expected.reshape(-1))
         self.log('train/loss', loss, prog_bar=True)
@@ -131,7 +136,7 @@ class ChartGenerator(pl.LightningModule):
         tgt = batch['tokens']
         
         logits = self(mel, tgt)
-        tgt_expected = tgt.transpose(0, 1)[1:, :]
+        tgt_expected = tgt[:, 1:]
         loss = self.criterion(logits.reshape(-1, self.vocab_size), tgt_expected.reshape(-1))
         self.log('val/loss', loss, prog_bar=True, sync_dist=True)
         return loss
@@ -161,20 +166,20 @@ class ChartGenerator(pl.LightningModule):
         device = mel.device
         batch_size = mel.shape[0]
         
-        memory = self.encoder(mel) # (T', B, d_model)
+        memory = self.encoder(mel) # (B, T', d_model)
         
-        ys = torch.ones(1, batch_size).fill_(bos_idx).type(torch.long).to(device)
+        ys = torch.ones(batch_size, 1).fill_(bos_idx).type(torch.long).to(device)
         
         for i in range(max_len - 1):
-            tgt_mask = self.decoder.generate_square_subsequent_mask(ys.size(0)).to(device)
-            out = self.decoder(ys, memory, tgt_mask=tgt_mask) # (L, B, V)
-            prob = F.softmax(out[-1, :, :], dim=-1) # (B, V)
+            tgt_mask = self.decoder.generate_square_subsequent_mask(ys.size(1)).to(device)
+            out = self.decoder(ys, memory, tgt_mask=tgt_mask) # (B, L, V)
+            prob = F.softmax(out[:, -1, :], dim=-1) # (B, V)
             _, next_word = torch.max(prob, dim=1) # (B,)
             
-            ys = torch.cat([ys, next_word.unsqueeze(0)], dim=0) # (L+1, B)
+            ys = torch.cat([ys, next_word.unsqueeze(1)], dim=1) # (B, L+1)
             
             # Simple early stopping if all generated eos
-            if (ys == eos_idx).any(dim=0).all():
+            if (ys == eos_idx).any(dim=1).all():
                 break
                 
-        return ys.transpose(0, 1) # (B, L)
+        return ys # (B, L)
