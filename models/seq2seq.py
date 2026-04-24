@@ -33,8 +33,10 @@ class AudioEncoder(nn.Module):
         self.conv2 = nn.Conv1d(d_model, d_model, kernel_size=3, padding=1, stride=2)
         
         self.pos_encoder = PositionalEncoding(d_model, dropout)
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
+        self.layers = nn.ModuleList([
+            nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True)
+            for _ in range(num_layers)
+        ])
         
     def forward(self, x):
         """
@@ -45,16 +47,24 @@ class AudioEncoder(nn.Module):
         x = F.gelu(self.conv2(x)) # (B, C, T')
         x = x.transpose(1, 2) # (B, T', C)
         x = self.pos_encoder(x)
-        output = self.transformer_encoder(x)
-        return output
+        
+        for layer in self.layers:
+            if self.training:
+                x = torch.utils.checkpoint.checkpoint(layer, x, use_reentrant=False)
+            else:
+                x = layer(x)
+                
+        return x
 
 class ChartDecoder(nn.Module):
     def __init__(self, vocab_size, d_model=256, nhead=8, num_layers=6, dim_feedforward=1024, dropout=0.1):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoder = PositionalEncoding(d_model, dropout)
-        decoder_layers = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True)
-        self.transformer_decoder = nn.TransformerDecoder(decoder_layers, num_layers)
+        self.layers = nn.ModuleList([
+            nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, batch_first=True)
+            for _ in range(num_layers)
+        ])
         self.fc_out = nn.Linear(d_model, vocab_size)
         self.d_model = d_model
         
@@ -78,11 +88,19 @@ class ChartDecoder(nn.Module):
         if tgt_is_causal:
             kwargs['tgt_is_causal'] = True
 
-        output = self.transformer_decoder(
-            tgt_emb, memory, 
-            tgt_key_padding_mask=tgt_key_padding_mask,
-            **kwargs
-        )
+        output = tgt_emb
+        for layer in self.layers:
+            if self.training:
+                def _forward(tgt_inp, mem_inp):
+                    return layer(tgt_inp, mem_inp, tgt_key_padding_mask=tgt_key_padding_mask, **kwargs)
+                output = torch.utils.checkpoint.checkpoint(_forward, output, memory, use_reentrant=False)
+            else:
+                output = layer(
+                    output, memory, 
+                    tgt_key_padding_mask=tgt_key_padding_mask,
+                    **kwargs
+                )
+                
         return self.fc_out(output)
 
 class ChartGenerator(pl.LightningModule):
