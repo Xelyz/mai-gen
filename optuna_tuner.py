@@ -44,7 +44,8 @@ def get_all_distributions() -> Dict[str, optuna.distributions.BaseDistribution]:
         "dropout": FloatDistribution(0.0, 0.3),
         "d_model": CategoricalDistribution([128, 256, 512]),
         "nhead": CategoricalDistribution([4, 8]),
-        "num_encoder_layers": IntDistribution(2, 6),
+        "num_mamba_layers": IntDistribution(0, 4),
+        "num_encoder_attn_layers": IntDistribution(1, 4),
         "num_decoder_layers": IntDistribution(2, 8),
         "dim_feedforward": CategoricalDistribution([512, 1024, 2048]),
     }
@@ -157,7 +158,8 @@ def objective(
     
     model_cfg["d_model"] = trial.suggest_categorical("d_model", [128, 256, 512])
     model_cfg["nhead"] = trial.suggest_categorical("nhead", [4, 8])
-    model_cfg["num_encoder_layers"] = trial.suggest_int("num_encoder_layers", 2, 6)
+    model_cfg["num_mamba_layers"] = trial.suggest_int("num_mamba_layers", 0, 4)
+    model_cfg["num_encoder_attn_layers"] = trial.suggest_int("num_encoder_attn_layers", 1, 4)
     model_cfg["num_decoder_layers"] = trial.suggest_int("num_decoder_layers", 2, 8)
     model_cfg["dim_feedforward"] = trial.suggest_categorical("dim_feedforward", [512, 1024, 2048])
 
