@@ -1,0 +1,136 @@
+# Liquid Chart Generator — CfC-based direct audio→chart generation
+# Uses Mug-Diffusion's data pipeline (with_audio=true) and loss function
+
+model:
+  class_path: models.liquid_seq2seq.LiquidChartGenerator
+  init_args:
+    n_mels: 128
+    d_model: 256
+    nhead: 8
+    encoder_cfc_units: 256
+    num_encoder_layers: 3
+    decoder_cfc_units: 256
+    num_decoder_layers: 4
+    dim_feedforward: 1024
+    dropout: 0.1
+    input_channels: 72
+    audio_note_window_ratio: 8
+    max_audio_frame: 32768
+    lr: 1e-4
+    warmup_steps: 4000
+    monitor: val/total_weighted_loss
+    lossconfig:
+      target: mai.firststage.losses.NewMaimaiReconstructLoss
+      params:
+        feature_config:
+          input_order: [
+            'tap', 'tap_offset', 'is_holding', 'hold_end_offset', 'is_break',
+            'is_slide_start', 'instance_active', 'instance_start_pos',
+            'instance_start_offset', 'instance_shape_id', 'instance_target_id',
+            'instance_end_offset'
+          ]
+          input_lengths: {
+            'tap': 8, 'tap_offset': 8, 'is_holding': 8, 'hold_end_offset': 8,
+            'is_break': 8, 'is_slide_start': 8, 'instance_active': 4,
+            'instance_start_pos': 4, 'instance_start_offset': 4,
+            'instance_shape_id': 4, 'instance_target_id': 4,
+            'instance_end_offset': 4
+          }
+          categorical:
+            InstStartPos: {indices: [52, 56], K: 9}
+            InstShapeID: {indices: [60, 64], K: 15}
+            InstTargetID: {indices: [64, 68], K: 9}
+          binary_indices: [
+            0, 1, 2, 3, 4, 5, 6, 7,
+            16, 17, 18, 19, 20, 21, 22, 23,
+            32, 33, 34, 35, 36, 37, 38, 39,
+            40, 41, 42, 43, 44, 45, 46, 47,
+            48, 49, 50, 51
+          ]
+          continuous_indices: [
+            8, 9, 10, 11, 12, 13, 14, 15,
+            24, 25, 26, 27, 28, 29, 30, 31,
+            56, 57, 58, 59,
+            68, 69, 70, 71
+          ]
+          decoder_output_order: [
+            'cont_bin',
+            'InstStartPos_logits',
+            'InstShapeID_logits',
+            'InstTargetID_logits'
+          ]
+          decoder_output_lengths: {
+            'cont_bin': 60,
+            'InstStartPos_logits': 36,
+            'InstShapeID_logits': 60,
+            'InstTargetID_logits': 36
+          }
+        weight_bce_tap: 5.0
+        weight_bce_break: 0.1
+        weight_bce_hold: 0.5
+        weight_bce_slide_start: 0.2
+        weight_bce_inst_active: 0.3
+        weight_mse_tap_offset: 2.0
+        weight_mse_hold_end: 0.3
+        weight_mse_inst_end: 0.1
+        weight_mse_inst_start_offset: 0.5
+        weight_ce_InstStartPos: 1.0
+        weight_ce_InstShapeID: 1.0
+        weight_ce_InstTargetID: 1.0
+        label_smoothing: 0.001
+
+data:
+  class_path: main.DataModuleFromConfig
+  init_args:
+    batch_size: 8
+    wrap: false
+    num_workers: 2
+    common_params:
+      data_dir: "/storage/all_charts_std_master_remaster"
+      csv_file: "data/all_songs.csv"
+      sr: 22050
+      n_fft: 512
+      max_audio_frame: 32768
+      audio_note_window_ratio: 8
+      n_mels: 128
+      cache_dir: "/tmp/audio_cache/"
+      with_audio: true
+      with_feature: false
+      feature_yaml: "configs/mai/maimai_beatmap_features.yaml"
+    train:
+      target: mai.data.dataset.MaimaiTrainDataset
+      params:
+        mirror_p: 0.3
+        shift_p: 0.0
+        rate: [0.75, 1.5]
+    validation:
+      target: mai.data.dataset.MaimaiValidDataset
+      params: {}
+
+trainer:
+  accelerator: 'auto'
+  devices: 1
+  benchmark: true
+  max_epochs: 200
+  precision: 16-mixed
+  check_val_every_n_epoch: 1
+  log_every_n_steps: 20
+  accumulate_grad_batches: 4
+  enable_progress_bar: false
+  enable_model_summary: false
+  callbacks:
+    - class_path: pytorch_lightning.callbacks.ModelCheckpoint
+      init_args:
+        dirpath: "/tmp/liquid_chart_gen"
+        filename: "liquid_{epoch:03d}"
+        save_top_k: 1
+        every_n_epochs: 5
+        monitor: "val/total_weighted_loss"
+    - class_path: mai.gdrive_callback.GoogleDriveUploader
+      init_args:
+        drive_folder_id: "1u8KQUrWQujsQ9TxlR-y0ukgzNIUt7gZD"
+        credentials_file: "/notebooks/credentials.json"
+        delete_local_after_upload: true
+    - class_path: pytorch_lightning.callbacks.LearningRateMonitor
+      init_args:
+        logging_interval: "step"

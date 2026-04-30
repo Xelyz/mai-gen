@@ -13,3 +13,4 @@ optuna
 PyYAML
 causal-conv1d>=1.2.0
 mamba-ssm>=2.0.0
+ncps
