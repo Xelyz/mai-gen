@@ -14,8 +14,9 @@ logger = logging.getLogger(__name__)
 try:
     from mamba_ssm import Mamba
     MAMBA_AVAILABLE = True
-except ImportError:
+except Exception as e:
     MAMBA_AVAILABLE = False
+    logger.warning(f"mamba-ssm import failed: {type(e).__name__}: {e}")
 
 # ──────────────────────────────────────────────
 # RoPE  (Rotary Positional Embedding)
