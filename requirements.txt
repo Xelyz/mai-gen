@@ -12,6 +12,5 @@ google-auth-httplib2
 google-auth-oauthlib
 optuna
 PyYAML
-causal-conv1d>=1.2.0
-mamba-ssm>=2.0.0
 ncps
+# causal-conv1d and mamba-ssm require source builds — installed via setup_env.sh
