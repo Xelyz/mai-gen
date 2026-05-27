@@ -9,7 +9,7 @@ trainer:
   callbacks:
     - class_path: pytorch_lightning.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "models/checkpoints"
+        dirpath: "/tmp/checkpoints"
         filename: "mai_gen_{epoch:03d}"
         save_top_k: 3
         monitor: "val/loss"
